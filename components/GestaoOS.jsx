@@ -269,6 +269,7 @@ export default function App() {
   const [editingId, setEditingId] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const [saveError, setSaveError] = useState("");
   const autosaveTimer = useRef(null);
 
   useEffect(() => {
@@ -310,6 +311,7 @@ export default function App() {
       setSaveState(res ? "saved" : "error");
     } catch (e) {
       setSaveState("error");
+      setSaveError(e && e.message ? e.message : String(e));
     }
   }
 
@@ -588,6 +590,11 @@ function Header({ saveState, onNew }) {
           {saveState === "saved" && "  ·  salvo"}
           {saveState === "error" && "  ·  erro ao salvar"}
         </div>
+        {saveState === "error" && saveError && (
+          <div style={{ fontSize: 11, color: "#c0392b", marginTop: 2, wordBreak: "break-word" }}>
+            {saveError}
+          </div>
+        )}
       </div>
       <button onClick={onNew} style={styles.newBtn} aria-label="Abrir novo serviço">
         <Plus size={16} color="#101113" />
@@ -1197,6 +1204,9 @@ function PreviaView({ os, totals, onEdit }) {
         </button>
         <button onClick={abrirTexto} style={styles.primaryBtnSmall}>
           <Printer size={15} style={{ marginRight: 6 }} /> Texto pra enviar
+        </button>
+        <button onClick={() => window.print()} style={styles.primaryBtnSmall}>
+          <Printer size={15} style={{ marginRight: 6 }} /> Gerar PDF
         </button>
       </div>
 
