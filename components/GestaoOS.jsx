@@ -518,7 +518,7 @@ export default function App() {
   return (
     <div style={styles.page}>
       <style>{printStyles}</style>
-      <Header saveState={saveState} onNew={startNew} />
+      <Header saveState={saveState} saveError={saveError} onNew={startNew} />
       <TabBar tab={tab} setTab={setTab} />
 
       <div style={styles.body}>
@@ -576,7 +576,7 @@ export default function App() {
 }
 
 // ---------- header / tabs ----------
-function Header({ saveState, onNew }) {
+function Header({ saveState, saveError, onNew }) {
   return (
     <div style={styles.header} className="no-print">
       <div style={styles.logoBadge}>
