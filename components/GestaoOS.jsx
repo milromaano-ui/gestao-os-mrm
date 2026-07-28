@@ -38,6 +38,18 @@ const brl = (n) =>
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+// gera automaticamente a linha exibida pro item de consultoria
+function consultoriaLabel(it) {
+  const tipo = it.tipo === "venda" ? "Consultoria de venda" : "Consultoria de compra";
+  const carro = (it.nomeCarro || "").trim() || "(carro)";
+  if (it.modo === "percentual") {
+    const pct = Number(it.percentual) || 0;
+    const valorCarro = Number(it.valorCarro) || 0;
+    return `${tipo} ${carro} — ${pct}% de ${brl(valorCarro)}`;
+  }
+  return `${tipo} ${carro} — ${brl(Number(it.valorFixo) || 0)} (fixo)`;
+}
+
 // ---------- import helpers (colar OS antiga da planilha) ----------
 function normStr(s) {
   return (s || "")
@@ -193,6 +205,21 @@ const emptyLaborItem = (overrides = {}) => ({
   ...overrides,
 });
 
+const emptyConsultoriaItem = (overrides = {}) => ({
+  id: uid(),
+  item: "",
+  descricao: "",
+  categoria: "consultoria",
+  tipo: "compra",
+  nomeCarro: "",
+  modo: "percentual",
+  valorCarro: "",
+  percentual: "",
+  valorFixo: "",
+  custosExtras: [],
+  ...overrides,
+});
+
 const emptyDraft = () => ({
   id: uid(),
   data: new Date().toISOString().slice(0, 10),
@@ -201,8 +228,8 @@ const emptyDraft = () => ({
   km: "",
   cor: "",
   placa: "",
-  status: "aberto", // pagamento: aberto | recebido
-  workflowStatus: "andamento", // andamento | fechada
+  status: "aberto",
+  workflowStatus: "andamento",
   items: [emptyItem()],
 });
 
@@ -214,6 +241,19 @@ function computeItem(it) {
       custoTotal,
       clienteTotal: custoTotal + maoDeObra,
       valorClienteUnit: custoTotal + maoDeObra,
+    };
+  }
+  if (it.categoria === "consultoria") {
+    const valorCobrado =
+      it.modo === "percentual"
+        ? ((Number(it.valorCarro) || 0) * (Number(it.percentual) || 0)) / 100
+        : Number(it.valorFixo) || 0;
+    const custosExtras = it.custosExtras || [];
+    const custoTotal = custosExtras.reduce((s, c) => s + (Number(c.valor) || 0), 0);
+    return {
+      custoTotal,
+      clienteTotal: valorCobrado,
+      valorClienteUnit: valorCobrado,
     };
   }
   const qtd = Number(it.qtd) || 0;
@@ -261,14 +301,14 @@ function upsertCliente(list, os) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState("inicio"); // inicio | servico | previa | painel
+  const [tab, setTab] = useState("inicio");
   const [records, setRecords] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [outrosCustos, setOutrosCustos] = useState([]);
   const [draft, setDraft] = useState(emptyDraft());
   const [editingId, setEditingId] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const [saveState, setSaveState] = useState("idle");
   const [saveError, setSaveError] = useState("");
   const autosaveTimer = useRef(null);
 
@@ -279,24 +319,19 @@ export default function App() {
         if (res && res.value) {
           setRecords(JSON.parse(res.value));
         }
-      } catch (e) {
-        // no records yet
-      }
+      } catch (e) {}
       try {
         const resC = await storage.get(CLIENTES_KEY, false);
         if (resC && resC.value) {
           setClientes(JSON.parse(resC.value));
         }
-      } catch (e) {
-        // no clients yet
-      }
+      } catch (e) {}
       try {
         const resO = await storage.get(OUTROS_KEY, false);
         if (resO && resO.value) {
           setOutrosCustos(JSON.parse(resO.value));
         }
       } catch (e) {
-        // no other costs yet
       } finally {
         setLoaded(true);
       }
@@ -319,18 +354,14 @@ export default function App() {
     setClientes(next);
     try {
       await storage.set(CLIENTES_KEY, JSON.stringify(next), false);
-    } catch (e) {
-      // best-effort
-    }
+    } catch (e) {}
   }
 
   async function persistOutros(next) {
     setOutrosCustos(next);
     try {
       await storage.set(OUTROS_KEY, JSON.stringify(next), false);
-    } catch (e) {
-      // best-effort
-    }
+    } catch (e) {}
   }
 
   function addOutroCusto(entry) {
@@ -393,6 +424,52 @@ export default function App() {
       const custos = items[idx].custos.slice();
       custos.splice(custoIdx, 1);
       items[idx] = { ...items[idx], custos };
+      return { ...d, items };
+    });
+  }
+
+  function addConsultoriaItem() {
+    setDraft((d) => ({ ...d, items: [...d.items, emptyConsultoriaItem()] }));
+  }
+
+  function updateConsultoriaItem(idx, patch) {
+    setDraft((d) => {
+      const items = d.items.slice();
+      const merged = { ...items[idx], ...patch };
+      merged.item = consultoriaLabel(merged);
+      items[idx] = merged;
+      return { ...d, items };
+    });
+  }
+
+  function addConsultoriaCusto(idx) {
+    setDraft((d) => {
+      const items = d.items.slice();
+      const custos = [
+        ...(items[idx].custosExtras || []),
+        { id: uid(), descricao: "", valor: "" },
+      ];
+      items[idx] = { ...items[idx], custosExtras: custos };
+      return { ...d, items };
+    });
+  }
+
+  function updateConsultoriaCusto(idx, custoIdx, patch) {
+    setDraft((d) => {
+      const items = d.items.slice();
+      const custos = items[idx].custosExtras.slice();
+      custos[custoIdx] = { ...custos[custoIdx], ...patch };
+      items[idx] = { ...items[idx], custosExtras: custos };
+      return { ...d, items };
+    });
+  }
+
+  function removeConsultoriaCusto(idx, custoIdx) {
+    setDraft((d) => {
+      const items = d.items.slice();
+      const custos = items[idx].custosExtras.slice();
+      custos.splice(custoIdx, 1);
+      items[idx] = { ...items[idx], custosExtras: custos };
       return { ...d, items };
     });
   }
@@ -540,6 +617,11 @@ export default function App() {
             addLaborCusto={addLaborCusto}
             updateLaborCusto={updateLaborCusto}
             removeLaborCusto={removeLaborCusto}
+            addConsultoriaItem={addConsultoriaItem}
+            updateConsultoriaItem={updateConsultoriaItem}
+            addConsultoriaCusto={addConsultoriaCusto}
+            updateConsultoriaCusto={updateConsultoriaCusto}
+            removeConsultoriaCusto={removeConsultoriaCusto}
             removeItem={removeItem}
             totals={totals}
             onSave={saveOS}
@@ -548,11 +630,7 @@ export default function App() {
           />
         )}
         {tab === "previa" && (
-          <PreviaView
-            os={draft}
-            totals={totals}
-            onEdit={() => setTab("servico")}
-          />
+          <PreviaView os={draft} totals={totals} onEdit={() => setTab("servico")} />
         )}
         {tab === "painel" && (
           <PainelView
@@ -572,7 +650,6 @@ export default function App() {
   );
 }
 
-// ---------- header / tabs ----------
 function Header({ saveState, saveError, onNew }) {
   return (
     <div style={styles.header} className="no-print">
@@ -613,10 +690,7 @@ function TabBar({ tab, setTab }) {
         <button
           key={key}
           onClick={() => setTab(key)}
-          style={{
-            ...styles.tabBtn,
-            ...(tab === key ? styles.tabBtnActive : {}),
-          }}
+          style={{ ...styles.tabBtn, ...(tab === key ? styles.tabBtnActive : {}) }}
         >
           <Icon size={15} style={{ marginRight: 6 }} />
           {label}
@@ -626,7 +700,6 @@ function TabBar({ tab, setTab }) {
   );
 }
 
-// ---------- Início ----------
 function InicioView({ records, onOpen, onNew, onImport, onBulkImport, loaded }) {
   const [busca, setBusca] = useState("");
   const [showImport, setShowImport] = useState(false);
@@ -640,9 +713,7 @@ function InicioView({ records, onOpen, onNew, onImport, onBulkImport, loaded }) 
     if (busca.trim().length < 2) return [];
     const q = busca.toLowerCase();
     return records
-      .filter((r) =>
-        `${r.cliente} ${r.carro} ${r.placa}`.toLowerCase().includes(q)
-      )
+      .filter((r) => `${r.cliente} ${r.carro} ${r.placa}`.toLowerCase().includes(q))
       .slice(0, 8);
   }, [busca, records]);
 
@@ -683,10 +754,7 @@ function InicioView({ records, onOpen, onNew, onImport, onBulkImport, loaded }) 
         <Plus size={18} style={{ marginRight: 8 }} /> Novo serviço
       </button>
 
-      <button
-        onClick={() => setShowImport((v) => !v)}
-        style={styles.importToggleBtn}
-      >
+      <button onClick={() => setShowImport((v) => !v)} style={styles.importToggleBtn}>
         {showImport ? "Cancelar importação" : "Importar OS antigas"}
       </button>
 
@@ -796,7 +864,6 @@ function ServicoCard({ r, onOpen }) {
   );
 }
 
-
 function LaborItemCard({ it, idx, updateLaborItem, addLaborCusto, updateLaborCusto, removeLaborCusto, removeItem }) {
   const c = computeItem(it);
   const maoDeObra = Number(it.maoDeObra) || 0;
@@ -871,6 +938,168 @@ function LaborItemCard({ it, idx, updateLaborItem, addLaborCusto, updateLaborCus
   );
 }
 
+function ConsultoriaItemCard({
+  it,
+  idx,
+  updateConsultoriaItem,
+  addConsultoriaCusto,
+  updateConsultoriaCusto,
+  removeConsultoriaCusto,
+  removeItem,
+}) {
+  const c = computeItem(it);
+  const custosExtras = it.custosExtras || [];
+  const lucro = c.clienteTotal - c.custoTotal;
+
+  return (
+    <div style={{ ...styles.itemCard, borderColor: "#1F7A4D", borderWidth: 1.5 }}>
+      <div style={styles.itemRowTop}>
+        <div style={{ ...styles.input, flex: 1.1, fontWeight: 600, background: "#EAF4EE" }}>
+          {consultoriaLabel(it)}
+        </div>
+        <button onClick={() => removeItem(idx)} style={styles.iconBtn} aria-label="Remover item">
+          <Trash2 size={15} color="#B5651D" />
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        {["compra", "venda"].map((t) => (
+          <button
+            key={t}
+            onClick={() => updateConsultoriaItem(idx, { tipo: t })}
+            style={{
+              flex: 1,
+              padding: "8px",
+              borderRadius: 8,
+              border: it.tipo === t ? "1px solid #101113" : "1px solid #DEDBD1",
+              background: it.tipo === t ? "#101113" : "#FFFFFF",
+              color: it.tipo === t ? "#F5C400" : "#5B6169",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            {t === "compra" ? "Compra" : "Venda"}
+          </button>
+        ))}
+      </div>
+
+      <input
+        value={it.nomeCarro}
+        onChange={(e) => updateConsultoriaItem(idx, { nomeCarro: e.target.value })}
+        placeholder="Ex.: BMW X1 2016"
+        style={{ ...styles.input, marginTop: 8 }}
+      />
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        {["percentual", "fixo"].map((m) => (
+          <button
+            key={m}
+            onClick={() => updateConsultoriaItem(idx, { modo: m })}
+            style={{
+              flex: 1,
+              padding: "8px",
+              borderRadius: 8,
+              border: it.modo === m ? "1px solid #101113" : "1px solid #DEDBD1",
+              background: it.modo === m ? "#101113" : "#FFFFFF",
+              color: it.modo === m ? "#F5C400" : "#5B6169",
+              fontSize: 11.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            {m === "percentual" ? "% do valor do carro" : "Valor fixo"}
+          </button>
+        ))}
+      </div>
+
+      {it.modo === "percentual" ? (
+        <div style={styles.itemRowBottom}>
+          <Field label="Valor do carro" small>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={it.valorCarro}
+              onChange={(e) => updateConsultoriaItem(idx, { valorCarro: e.target.value })}
+              placeholder="0,00"
+              style={styles.inputSmall}
+            />
+          </Field>
+          <Field label="Percentual (%)" small>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={it.percentual}
+              onChange={(e) => updateConsultoriaItem(idx, { percentual: e.target.value })}
+              placeholder="0"
+              style={styles.inputSmall}
+            />
+          </Field>
+        </div>
+      ) : (
+        <div style={{ marginTop: 8 }}>
+          <Field label="Valor fixo" small>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={it.valorFixo}
+              onChange={(e) => updateConsultoriaItem(idx, { valorFixo: e.target.value })}
+              placeholder="0,00"
+              style={styles.inputSmall}
+            />
+          </Field>
+        </div>
+      )}
+
+      <div style={{ marginTop: 10 }}>
+        <div style={styles.labelSmall}>
+          Custos (deslocamento, anúncio, consulta de histórico...)
+        </div>
+        {custosExtras.map((custo, cIdx) => (
+          <div key={custo.id} style={styles.custoRow}>
+            <input
+              value={custo.descricao}
+              onChange={(e) => updateConsultoriaCusto(idx, cIdx, { descricao: e.target.value })}
+              placeholder="Ex.: Deslocamento"
+              style={{ ...styles.inputSmall, flex: 1.4 }}
+            />
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={custo.valor}
+              onChange={(e) => updateConsultoriaCusto(idx, cIdx, { valor: e.target.value })}
+              placeholder="0,00"
+              style={{ ...styles.inputSmall, flex: 0.8 }}
+            />
+            <button
+              onClick={() => removeConsultoriaCusto(idx, cIdx)}
+              style={styles.iconBtn}
+              aria-label="Remover custo"
+            >
+              <Trash2 size={13} color="#B5651D" />
+            </button>
+          </div>
+        ))}
+        <button onClick={() => addConsultoriaCusto(idx)} style={styles.addCustoBtn}>
+          <Plus size={13} style={{ marginRight: 4 }} /> Adicionar custo
+        </button>
+      </div>
+
+      <div style={styles.itemFooter}>
+        <span>Você cobra: {brl(c.clienteTotal)}</span>
+        <span>Seus custos: {brl(c.custoTotal)}</span>
+        <span style={{ fontWeight: 700, color: lucro < 0 ? "#B5651D" : "#1F7A4D" }}>
+          Lucro: {brl(lucro)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function FormView({
   draft,
   setDraft,
@@ -881,6 +1110,11 @@ function FormView({
   addLaborCusto,
   updateLaborCusto,
   removeLaborCusto,
+  addConsultoriaItem,
+  updateConsultoriaItem,
+  addConsultoriaCusto,
+  updateConsultoriaCusto,
+  removeConsultoriaCusto,
   removeItem,
   totals,
   onSave,
@@ -1011,6 +1245,20 @@ function FormView({
             />
           );
         }
+        if (it.categoria === "consultoria") {
+          return (
+            <ConsultoriaItemCard
+              key={it.id}
+              it={it}
+              idx={idx}
+              updateConsultoriaItem={updateConsultoriaItem}
+              addConsultoriaCusto={addConsultoriaCusto}
+              updateConsultoriaCusto={updateConsultoriaCusto}
+              removeConsultoriaCusto={removeConsultoriaCusto}
+              removeItem={removeItem}
+            />
+          );
+        }
         const c = computeItem(it);
         const hasMarkup = it.valorCliente !== "" && it.valorCliente !== null;
         const margem = c.custoTotal > 0 ? ((c.clienteTotal - c.custoTotal) / c.custoTotal) * 100 : 0;
@@ -1088,28 +1336,43 @@ function FormView({
         );
       })}
 
-      <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={addItem} style={{ ...styles.addItemBtn, flex: 1 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <button onClick={addItem} style={styles.addItemBtn}>
           <Plus size={15} style={{ marginRight: 6 }} /> Adicionar item
         </button>
-        <button
-          onClick={addLaborItem}
-          disabled={temMaoDeObra}
-          style={{
-            ...styles.addItemBtn,
-            flex: 1,
-            borderColor: temMaoDeObra ? "#E4E1D8" : "#F5C400",
-            color: temMaoDeObra ? "#B9BCC2" : "#101113",
-            cursor: temMaoDeObra ? "default" : "pointer",
-          }}
-        >
-          <Plus size={15} style={{ marginRight: 6 }} />
-          {temMaoDeObra ? "Mão de obra já adicionada" : "Mão de obra"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={addLaborItem}
+            disabled={temMaoDeObra}
+            style={{
+              ...styles.addItemBtn,
+              flex: 1,
+              borderColor: temMaoDeObra ? "#E4E1D8" : "#F5C400",
+              color: temMaoDeObra ? "#B9BCC2" : "#101113",
+              cursor: temMaoDeObra ? "default" : "pointer",
+            }}
+          >
+            <Plus size={15} style={{ marginRight: 6 }} />
+            {temMaoDeObra ? "Mão de obra já adicionada" : "Mão de obra"}
+          </button>
+          <button
+            onClick={addConsultoriaItem}
+            style={{
+              ...styles.addItemBtn,
+              flex: 1,
+              borderColor: "#1F7A4D",
+              color: "#101113",
+            }}
+          >
+            <Plus size={15} style={{ marginRight: 6 }} /> Consultoria
+          </button>
+        </div>
       </div>
       <div style={styles.itemsHintRow}>
         O botão "Mão de obra" cria um único item — vá lançando cada deslocamento nele conforme
-        acontece, e defina sua mão de obra quando for fechar a OS.
+        acontece, e defina sua mão de obra quando for fechar a OS. O botão "Consultoria" é pra
+        consultoria de compra ou venda: o valor (% ou fixo) é o que você cobra do cliente, e os
+        custos que lançar ali dentro só reduzem o seu lucro.
       </div>
 
       <div style={styles.summaryBar}>
@@ -1152,7 +1415,6 @@ function SummaryStat({ label, value, accent }) {
   );
 }
 
-// ---------- Prévia (client-facing OS) ----------
 function buildOSText(os, totals) {
   const linhas = [];
   linhas.push("MRM PERSONAL CAR");
@@ -1177,7 +1439,6 @@ function buildOSText(os, totals) {
   return linhas.join("\n");
 }
 
-// ---------- nome automático do arquivo PDF ----------
 function slugFileName(os) {
   const parts = [
     "OS",
@@ -1294,7 +1555,8 @@ function PreviaView({ os, totals, onEdit }) {
             .filter((it) => it.item || it.descricao)
             .map((it) => {
               const c = computeItem(it);
-              const qtdExibida = it.categoria === "mao_obra" ? 1 : it.qtd;
+              const qtdExibida =
+                it.categoria === "mao_obra" || it.categoria === "consultoria" ? 1 : it.qtd;
               return (
                 <div key={it.id} style={styles.osTableRow}>
                   <span style={{ flex: 1.2 }}>{it.item}</span>
@@ -1335,7 +1597,6 @@ function formatDateBR(iso) {
   return `${d}/${m}/${y}`;
 }
 
-// ---------- Painel financeiro ----------
 function PainelView({
   records,
   outrosCustos,
@@ -1378,7 +1639,7 @@ function PainelView({
       faturado = 0,
       recebido = 0,
       aReceber = 0;
-    const porCategoria = { peca: 0, servico: 0, mao_obra: 0 };
+    const porCategoria = { peca: 0, servico: 0, mao_obra: 0, consultoria: 0 };
     const chart = recordsPeriodo
       .slice()
       .reverse()
@@ -1415,9 +1676,7 @@ function PainelView({
   const filtrados = useMemo(() => {
     if (filtro.trim().length < 2) return recordsPeriodo;
     const q = filtro.toLowerCase();
-    return recordsPeriodo.filter((r) =>
-      `${r.cliente} ${r.carro} ${r.placa}`.toLowerCase().includes(q)
-    );
+    return recordsPeriodo.filter((r) => `${r.cliente} ${r.carro} ${r.placa}`.toLowerCase().includes(q));
   }, [filtro, recordsPeriodo]);
 
   function limparPeriodo() {
@@ -1471,6 +1730,9 @@ function PainelView({
         <StatCard label="Peças (faturado)" value={brl(dados.porCategoria.peca)} />
         <StatCard label="Serviços (faturado)" value={brl(dados.porCategoria.servico)} />
         <StatCard label="Mão de obra (faturado)" value={brl(dados.porCategoria.mao_obra)} tone="#101113" />
+      </div>
+      <div style={{ ...styles.statsGrid, marginTop: 8 }}>
+        <StatCard label="Consultoria (faturado)" value={brl(dados.porCategoria.consultoria)} tone="#1F7A4D" />
       </div>
 
       {dados.chart.length > 0 && (
@@ -1626,7 +1888,6 @@ function StatCard({ label, value, tone, accent }) {
   );
 }
 
-// ---------- styles ----------
 const styles = {
   page: {
     minHeight: "100vh",
@@ -1653,11 +1914,7 @@ const styles = {
     flexShrink: 0,
     overflow: "hidden",
   },
-  logoBadgeImg: {
-    width: "100%",
-    height: "100%",
-    objectFit: "contain",
-  },
+  logoBadgeImg: { width: "100%", height: "100%", objectFit: "contain" },
   headerTitle: { fontWeight: 700, fontSize: 15, letterSpacing: 0.2 },
   headerSub: { fontSize: 11.5, color: "#8A8F98", marginTop: 1 },
   newBtn: {
@@ -1672,12 +1929,7 @@ const styles = {
     cursor: "pointer",
     flexShrink: 0,
   },
-  tabBar: {
-    display: "flex",
-    gap: 6,
-    padding: "0 16px 14px",
-    borderBottom: "1px solid #E4E1D8",
-  },
+  tabBar: { display: "flex", gap: 6, padding: "0 16px 14px", borderBottom: "1px solid #E4E1D8" },
   tabBtn: {
     display: "flex",
     alignItems: "center",
@@ -1690,10 +1942,7 @@ const styles = {
     color: "#5B6169",
     cursor: "pointer",
   },
-  tabBtnActive: {
-    background: "#101113",
-    color: "#F5C400",
-  },
+  tabBtnActive: { background: "#101113", color: "#F5C400" },
   body: { padding: "16px" },
   bigNewBtn: {
     width: "100%",
@@ -1729,12 +1978,7 @@ const styles = {
     padding: 12,
     marginBottom: 16,
   },
-  importHint: {
-    fontSize: 11.5,
-    color: "#5B6169",
-    lineHeight: 1.5,
-    marginBottom: 10,
-  },
+  importHint: { fontSize: 11.5, color: "#5B6169", lineHeight: 1.5, marginBottom: 10 },
   importTextarea: {
     width: "100%",
     minHeight: 120,
@@ -1756,13 +2000,7 @@ const styles = {
     padding: "8px 10px",
     marginTop: 8,
   },
-  orDivider: {
-    textAlign: "center",
-    fontSize: 11,
-    color: "#8A8F98",
-    margin: "14px 0 10px",
-    fontWeight: 600,
-  },
+  orDivider: { textAlign: "center", fontSize: 11, color: "#8A8F98", margin: "14px 0 10px", fontWeight: 600 },
   searchBox: {
     display: "flex",
     alignItems: "center",
@@ -1772,14 +2010,7 @@ const styles = {
     borderRadius: 10,
     padding: "10px 12px",
   },
-  searchInput: {
-    flex: 1,
-    border: "none",
-    outline: "none",
-    fontSize: 13.5,
-    background: "transparent",
-    color: "#101113",
-  },
+  searchInput: { flex: 1, border: "none", outline: "none", fontSize: 13.5, background: "transparent", color: "#101113" },
   sugestaoBtn: {
     display: "block",
     width: "100%",
@@ -1804,12 +2035,7 @@ const styles = {
     marginBottom: 8,
     cursor: "pointer",
   },
-  card: {
-    background: "#FFFFFF",
-    border: "1px solid #E4E1D8",
-    borderRadius: 12,
-    padding: 16,
-  },
+  card: { background: "#FFFFFF", border: "1px solid #E4E1D8", borderRadius: 12, padding: 16 },
   sectionLabel: {
     fontSize: 11,
     fontWeight: 700,
@@ -1843,19 +2069,8 @@ const styles = {
     color: "#101113",
     outline: "none",
   },
-  itemsHintRow: {
-    fontSize: 11.5,
-    color: "#8A8F98",
-    marginBottom: 10,
-    lineHeight: 1.4,
-  },
-  itemCard: {
-    border: "1px solid #E4E1D8",
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 10,
-    background: "#FCFBF8",
-  },
+  itemsHintRow: { fontSize: 11.5, color: "#8A8F98", marginBottom: 10, lineHeight: 1.4 },
+  itemCard: { border: "1px solid #E4E1D8", borderRadius: 10, padding: 10, marginBottom: 10, background: "#FCFBF8" },
   itemRowTop: { display: "flex", gap: 8, alignItems: "center" },
   itemRowBottom: { display: "flex", gap: 8, marginTop: 8 },
   itemFooter: {
@@ -1867,12 +2082,7 @@ const styles = {
     paddingTop: 8,
     borderTop: "1px dashed #E4E1D8",
   },
-  custoRow: {
-    display: "flex",
-    gap: 6,
-    alignItems: "center",
-    marginBottom: 6,
-  },
+  custoRow: { display: "flex", gap: 6, alignItems: "center", marginBottom: 6 },
   addCustoBtn: {
     display: "flex",
     alignItems: "center",
@@ -1888,14 +2098,7 @@ const styles = {
     cursor: "pointer",
     marginTop: 2,
   },
-  iconBtn: {
-    background: "transparent",
-    border: "none",
-    cursor: "pointer",
-    padding: 6,
-    display: "flex",
-    alignItems: "center",
-  },
+  iconBtn: { background: "transparent", border: "none", cursor: "pointer", padding: 6, display: "flex", alignItems: "center" },
   addItemBtn: {
     display: "flex",
     alignItems: "center",
@@ -1911,19 +2114,8 @@ const styles = {
     cursor: "pointer",
     marginTop: 2,
   },
-  summaryBar: {
-    display: "flex",
-    gap: 8,
-    marginTop: 18,
-    marginBottom: 14,
-  },
-  summaryStat: {
-    flex: 1,
-    background: "#101113",
-    borderRadius: 10,
-    padding: "10px 8px",
-    textAlign: "center",
-  },
+  summaryBar: { display: "flex", gap: 8, marginTop: 18, marginBottom: 14 },
+  summaryStat: { flex: 1, background: "#101113", borderRadius: 10, padding: "10px 8px", textAlign: "center" },
   summaryLabel: { fontSize: 9.5, color: "#B9BCC2", textTransform: "uppercase", letterSpacing: 0.4 },
   summaryValue: { fontSize: 13.5, fontWeight: 700, marginTop: 2, color: "#F5C400" },
   primaryBtn: {
@@ -1937,11 +2129,7 @@ const styles = {
     fontWeight: 700,
     cursor: "pointer",
   },
-  formActions: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-  },
+  formActions: { display: "flex", flexDirection: "column", gap: 8 },
   secondaryBtn: {
     width: "100%",
     padding: "12px",
@@ -1977,18 +2165,8 @@ const styles = {
     fontWeight: 600,
     cursor: "pointer",
   },
-  previaActions: {
-    display: "flex",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  copyBox: {
-    background: "#FFFFFF",
-    border: "1px solid #E4E1D8",
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 14,
-  },
+  previaActions: { display: "flex", justifyContent: "space-between", marginBottom: 12 },
+  copyBox: { background: "#FFFFFF", border: "1px solid #E4E1D8", borderRadius: 10, padding: 12, marginBottom: 14 },
   copyTextarea: {
     width: "100%",
     minHeight: 160,
@@ -2033,17 +2211,8 @@ const styles = {
     justifyContent: "center",
     flexShrink: 0,
   },
-  osLogoImg: {
-    width: "100%",
-    height: "100%",
-    objectFit: "contain",
-  },
-  osTitle: {
-    fontFamily: "Georgia, 'Times New Roman', serif",
-    fontSize: 24,
-    fontWeight: 700,
-    margin: "18px 0 14px",
-  },
+  osLogoImg: { width: "100%", height: "100%", objectFit: "contain" },
+  osTitle: { fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 24, fontWeight: 700, margin: "18px 0 14px" },
   osMetaGrid: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
@@ -2064,12 +2233,7 @@ const styles = {
     paddingBottom: 6,
     marginBottom: 4,
   },
-  osTableRow: {
-    display: "flex",
-    fontSize: 12,
-    padding: "6px 0",
-    borderBottom: "1px solid #F0EEE7",
-  },
+  osTableRow: { display: "flex", fontSize: 12, padding: "6px 0", borderBottom: "1px solid #F0EEE7" },
   osEmptyRow: { fontSize: 12, color: "#8A8F98", padding: "14px 0" },
   osTotalRow: {
     display: "flex",
@@ -2094,62 +2258,18 @@ const styles = {
     opacity: 0.75,
     letterSpacing: 2,
   },
-  periodoRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  outroForm: {
-    background: "#FFFFFF",
-    border: "1px solid #E4E1D8",
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 10,
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 8,
-  },
-  statsGrid3: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr 1fr",
-    gap: 8,
-    marginTop: 10,
-  },
-  statCard: {
-    background: "#FFFFFF",
-    border: "1px solid #E4E1D8",
-    borderRadius: 10,
-    padding: "12px 10px",
-  },
+  periodoRow: { display: "flex", alignItems: "center", gap: 8 },
+  outroForm: { background: "#FFFFFF", border: "1px solid #E4E1D8", borderRadius: 10, padding: 10, marginBottom: 10 },
+  statsGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
+  statsGrid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 10 },
+  statCard: { background: "#FFFFFF", border: "1px solid #E4E1D8", borderRadius: 10, padding: "12px 10px" },
   statLabel: { fontSize: 10, color: "#8A8F98", fontWeight: 600, textTransform: "uppercase" },
   statValue: { fontSize: 16, fontWeight: 700, marginTop: 3 },
-  chartCard: {
-    background: "#FFFFFF",
-    border: "1px solid #E4E1D8",
-    borderRadius: 12,
-    padding: 14,
-    marginTop: 16,
-  },
+  chartCard: { background: "#FFFFFF", border: "1px solid #E4E1D8", borderRadius: 12, padding: 14, marginTop: 16 },
   emptyMsg: { fontSize: 12.5, color: "#8A8F98", padding: "10px 0" },
-  recordRow: {
-    background: "#FFFFFF",
-    border: "1px solid #E4E1D8",
-    borderRadius: 10,
-    padding: "10px 10px",
-    marginBottom: 8,
-  },
-  recordTopRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-  },
-  recordBadgeRow: {
-    display: "flex",
-    gap: 6,
-    marginTop: 8,
-  },
+  recordRow: { background: "#FFFFFF", border: "1px solid #E4E1D8", borderRadius: 10, padding: "10px 10px", marginBottom: 8 },
+  recordTopRow: { display: "flex", alignItems: "center", gap: 6 },
+  recordBadgeRow: { display: "flex", gap: 6, marginTop: 8 },
   recordTitle: { fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   recordSub: { fontSize: 11, color: "#8A8F98", marginTop: 2 },
   statusBtn: {
@@ -2169,12 +2289,8 @@ const styles = {
 const printStyles = `
   @media print {
     .no-print { display: none !important; }
-
-    /* impede o wrapper de forçar uma "tela cheia" extra em branco */
     html, body { min-height: 0 !important; height: auto !important; }
     .app-shell { min-height: 0 !important; }
-
-    /* deixa o papel da OS fluir normalmente, sem overlay/absolute */
     #os-paper {
       position: static !important;
       box-shadow: none !important;
